@@ -2,6 +2,7 @@ Parameters:
   EnvironmentName:
     Description: An environment name that is prefixed to resource names
     Type: String
+    Default: EC2-wth-minconda-port-80-5000-22
   KeyName:
     Description: Amazon EC2 KeyPair
     Type: AWS::EC2::KeyPair::KeyName
@@ -13,25 +14,23 @@ Parameters:
     Description: Please enter the IP range (CIDR notation) for the public subnet in the first Availability Zone
     Type: String
     Default: 10.0.1.0/24
-  PrivateSubnet1CIDR:
-    Description: Please enter the IP range (CIDR notation) for the private subnet in the first Availability Zone
-    Type: String
-    Default: 10.0.2.0/24
 
 Mappings:
   RegionMap:
-    us-east-1:
-      AMI: ami-1853ac65
-    us-west-1:
-      AMI: ami-bf5540df
-    eu-west-1:
-      AMI: ami-3bfab942
-    ap-southeast-1:
-      AMI: ami-e2adf99e
-    ap-southeast-2:
-      AMI: ami-43874721
-    ap-south-1:
-      AMI: ami-4b7d0824
+    # us-east-1:
+    #   AMI: ami-1853ac65
+    us-east-2:
+      AMI: ami-0bbe28eb2173f6167
+    # us-west-1:
+    #   AMI: ami-bf5540df
+    # eu-west-1:
+    #   AMI: ami-3bfab942
+    # ap-southeast-1:
+    #   AMI: ami-e2adf99e
+    # ap-southeast-2:
+    #   AMI: ami-43874721
+    # ap-south-1:
+    #   AMI: ami-4b7d0824
 
 Resources:
   VPC:
@@ -68,23 +67,6 @@ Resources:
         - Key: Name
           Value: !Sub ${EnvironmentName} Public Subnet (AZ1)
 
-  PrivateSubnet1:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref VPC
-      AvailabilityZone: !Select [0, !GetAZs ""]
-      CidrBlock: !Ref PrivateSubnet1CIDR
-      MapPublicIpOnLaunch: false
-      Tags:
-        - Key: Name
-          Value: !Sub ${EnvironmentName} Private Subnet (AZ1)
-
-  NatGateway1EIP:
-    Type: AWS::EC2::EIP
-    DependsOn: InternetGatewayAttachment
-    Properties:
-      Domain: vpc
-
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
@@ -101,40 +83,13 @@ Resources:
       DestinationCidrBlock: 0.0.0.0/0
       GatewayId: !Ref InternetGateway
 
-  NatGateway1:
-    Type: AWS::EC2::NatGateway
-    Properties:
-      AllocationId: !GetAtt NatGateway1EIP.AllocationId
-      SubnetId: !Ref PublicSubnet1
-
   PublicSubnet1RouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
       RouteTableId: !Ref PublicRouteTable
       SubnetId: !Ref PublicSubnet1
 
-  PrivateRouteTable1:
-    Type: AWS::EC2::RouteTable
-    Properties:
-      VpcId: !Ref VPC
-      Tags:
-        - Key: Name
-          Value: !Sub ${EnvironmentName} Private Routes (AZ1)
-
-  DefaultPrivateRoute1:
-    Type: AWS::EC2::Route
-    Properties:
-      RouteTableId: !Ref PrivateRouteTable1
-      DestinationCidrBlock: 0.0.0.0/0
-      NatGatewayId: !Ref NatGateway1
-
-  PrivateSubnet1RouteTableAssociation:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      RouteTableId: !Ref PrivateRouteTable1
-      SubnetId: !Ref PrivateSubnet1
-
-  BastionEC2Instance:
+  EC2Instance:
     Type: AWS::EC2::Instance
     Properties:
       InstanceType: t2.micro
@@ -145,7 +100,7 @@ Resources:
           - AMI
       Tags:
         - Key: Name
-          Value: "Bastion Host"
+          Value: !Sub ${EnvironmentName} miniconda instance
       KeyName: !Ref KeyName
       NetworkInterfaces:
         - AssociatePublicIpAddress: "true"
@@ -154,23 +109,12 @@ Resources:
             - Ref: "MySecurityGroup"
           SubnetId:
             Ref: "PublicSubnet1"
-
-  PrivateEC2Instance:
-    Type: AWS::EC2::Instance
-    Properties:
-      InstanceType: t2.micro
-      ImageId:
-        Fn::FindInMap:
-          - RegionMap
-          - !Ref AWS::Region
-          - AMI
-      SecurityGroupIds:
-        - !Ref MySecurityGroup
-      SubnetId: !Ref PrivateSubnet1
-      Tags:
-        - Key: Name
-          Value: "Private Instance"
-      KeyName: !Ref KeyName
+      UserData:
+        "Fn::Base64": !Sub |
+          #!/bin/bash -xe   
+          wget https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh
+          sudo chmod +x Miniconda3-latest-Linux-x86_64.sh
+          ./Miniconda3-latest-Linux-x86_64.sh
 
   MySecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -182,24 +126,15 @@ Resources:
           FromPort: "22"
           ToPort: "22"
           CidrIp: 0.0.0.0/0
-
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 5000
+          ToPort: 5000
+          CidrIp: 0.0.0.0/0
 Outputs:
-  BastionHostIP:
-    Description: The Public Ip
-    Value: !GetAtt BastionEC2Instance.PublicIp
-  PrivateInstanceIp:
-    Description: The Private Ip of host
-    Value: !GetAtt PrivateEC2Instance.PrivateIp
   ConnectionCMD:
-    Value:
-      !Join [
-        "",
-        [
-          ssh -A -J ec2-user@,
-          !GetAtt BastionEC2Instance.PublicIp,
-          " ",
-          ec2-user@,
-          !GetAtt PrivateEC2Instance.PrivateIp,
-        ],
-      ]
-    Description: Copy and run it in your shell
+    Value: !Join ["", [ssh -A ubuntu@, !GetAtt EC2Instance.PublicIp]]
+    Description: Copy and run it in your shell(ssh-add *.pem for this to work)
